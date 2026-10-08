@@ -263,6 +263,83 @@ El Host distribuido en las tiendas debe contener las dependencias nativas necesa
 
 No conviene extraer primero un módulo con muchas dependencias nativas o con estado global fuertemente acoplado al monolito. Es preferible validar el mecanismo con una sección cuyo contrato pueda definirse claramente.
 
+## 8. Impacto en QA y pruebas automatizadas
+
+La migración cambia la ejecución de un bloque monolítico y estático a un sistema distribuido y asíncrono. Por ello, es probable que algunas pruebas fallen inicialmente, especialmente aquellas que asumen que todos los módulos están disponibles en memoria desde el arranque.
+
+### Pruebas end-to-end (E2E)
+
+Las pruebas con Detox, Appium o Maestro deben contemplar la descarga y evaluación de los bundles remotos:
+
+- **Esperas explícitas:** la navegación puede mostrar temporalmente el `Suspense fallback`. Sustituye las aserciones inmediatas por esperas como `waitFor(element).toBeVisible()` o el mecanismo equivalente de la herramienta utilizada.
+- **Disponibilidad de los bundles:** el entorno local o de CI debe levantar el Host y un servidor estático/CDN que sirva `loginModule.container.bundle`, `homeModule.container.bundle` y los demás contenedores.
+- **Acceso desde el dispositivo:** verifica que el emulador o dispositivo pueda resolver la URL configurada. `localhost` dentro de un dispositivo físico no apunta necesariamente al equipo que sirve los bundles.
+- **Escenarios de fallo:** prueba timeout, respuesta HTTP inválida, bundle ausente y pérdida de conectividad durante la descarga.
+
+### Pruebas unitarias y de integración
+
+Las pruebas aisladas de componentes pueden continuar funcionando, pero Jest no resuelve automáticamente los módulos federados. Configura mocks de `ScriptManager` y `Federated.importModule` para evitar peticiones HTTP y resolver los módulos de forma local y determinista.
+
+```js
+// jest.setup.js
+jest.mock('@callstack/repack/client', () => ({
+  ScriptManager: {
+    shared: {
+      addResolver: jest.fn(),
+    },
+  },
+  Federated: {
+    importModule: jest.fn(async (container, module) => {
+      if (container === 'loginModule' && module === './LoginScreen') {
+        return require('./src/screens/LoginScreen');
+      }
+
+      throw new Error(`Módulo federado no configurado: ${container}${module}`);
+    }),
+  },
+}));
+```
+
+Las pruebas de componentes cargados con `React.lazy` deben usar utilidades asíncronas de React Native Testing Library, como `findBy...` o `waitFor`, en lugar de asumir que el contenido está disponible inmediatamente.
+
+### QA manual y exploratorio
+
+Cada micro-frontend debe estar protegido por una estrategia de error que impida un cierre inesperado de la aplicación. QA debe comprobar que un fallo de descarga muestre un mensaje útil y una acción de reintento.
+
+También se deben probar:
+
+- Redes 3G, EDGE y latencia elevada.
+- Carga repetida del mismo contenedor y comportamiento del caché.
+- Actualización de un bundle con una versión nueva.
+- Rollback a la versión anterior cuando un despliegue falle.
+- Reinicio de la aplicación durante una descarga.
+
+`Suspense` solo gestiona el estado de carga; no reemplaza un `ErrorBoundary`. La aplicación debe definir ambos estados: carga y error.
+
+### Matriz de compatibilidad y contratos
+
+Con Module Federation, el Host y los contenedores tienen ciclos de vida independientes. QA debe validar combinaciones como:
+
+| Host | Login | Resultado esperado |
+| --- | --- | --- |
+| `1.0.0` | `1.0.0` | Funcionamiento normal |
+| `1.0.0` | `2.0.0` | Compatibilidad garantizada por el contrato |
+| `2.0.0` | `1.0.0` | Compatibilidad hacia atrás, si está soportada |
+| `1.0.0` | Bundle no disponible | Error controlado y opción de reintento |
+
+Los contratos públicos, incluyendo props, eventos y formatos de datos, deben documentarse y probarse. Un contenedor no debe asumir que el Host se actualizará al mismo tiempo.
+
+### Caché y actualizaciones
+
+Module Federation no invalida automáticamente la caché de un CDN o del dispositivo. Para publicar cambios de forma segura:
+
+- Usa URLs versionadas o un manifiesto con control de versión.
+- Configura correctamente `Cache-Control`, `ETag` y la política de invalidación del CDN.
+- Conserva la versión anterior durante el despliegue y el rollback.
+- Prueba explícitamente qué ocurre cuando el Host tiene una versión antigua y el contenedor una nueva.
+
+Una actualización de un bundle JavaScript no elimina la necesidad de actualizar la aplicación nativa cuando cambian dependencias nativas, contratos incompatibles o configuraciones de Android/iOS. Las actualizaciones OTA deben cumplir además las políticas de distribución de las tiendas y las reglas internas de seguridad.
+
 ## Lista de comprobación
 
 - [ ] `index.js` importa `src/bootstrap`.
@@ -275,6 +352,11 @@ No conviene extraer primero un módulo con muchas dependencias nativas o con est
 - [ ] Las librerías nativas están instaladas y enlazadas en el Host.
 - [ ] Los tokens privados solo existen como secretos de CI/CD.
 - [ ] Existen pruebas de fallo, timeout, rollback y compatibilidad.
+- [ ] Jest tiene mocks para `ScriptManager` y `Federated.importModule`.
+- [ ] Las pruebas E2E esperan explícitamente la carga de los micro-frontends.
+- [ ] QA valida redes lentas, pérdida de conectividad y errores de descarga.
+- [ ] Existe una matriz de compatibilidad entre versiones del Host y los contenedores.
+- [ ] Las URLs o el manifiesto de bundles tienen una estrategia de caché y rollback.
 
 ## Recursos
 
